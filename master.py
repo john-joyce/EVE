@@ -362,7 +362,7 @@ class Morbidostat:
         self.OD_err = self.config[self.varstr].getfloat('OD_error')
         self.time_between_ODs = self.config[self.varstr].getfloat('time_between_ODs') # how often to gather OD data, in seconds
         self.time_between_graphs = self.config[self.varstr].getfloat('time_between_graphs') # how often to graph, in minutes
-        self.bars_drug_interval = self.config[self.varstr].getfloat(('bars_drug_pump_interval')*60) #NEW JOHN time between pumps for the bars algorithm converted to seconds
+        self.bars_drug_interval = self.config[self.varstr].getfloat(('bars_drug_pump_interval')*60) #NEW time between pumps for the bars algorithm converted to seconds
         # OD_thr is the threshold above which to activate drug pump  [vish bench tests: empty: 3.5V, Clear Vial: 0.265V, Very Cloudy Vial: 2.15V]
 
         #time_between_writes = 1  # how often to write out OD data, in minutes
@@ -1128,14 +1128,14 @@ class Morbidostat:
                 else: #report even when pumps aren't activated yet
                     self.no_pump()
 
-            if self.selection == 'bars':          #NEW FOR ESHAN
+            if self.selection == 'bars': #NEW 
 
                 if self.avOD > self.OD_min:
                     self.pump_waste()
 
                     if ((self.elapsed_time.total_seconds - self.last_dilutiontime) >= (self.bars_drug_interval)):  #both were converted into seconds
                       self.pump_drug()
-                      self.last_dilutiontime = self.elapsed_time.total_seconds
+                      self.last_dilutiontime = self.elapsed_time.total_seconds 
 
                     else:
                       self.pump_media()
@@ -1148,7 +1148,7 @@ class Morbidostat:
 
             self.last_dilutionOD = self.avOD
 
-            if self.last_dilutiontime < self.bars_drug_interval:
+            if self.last_dilutiontime < self.bars_drug_interval: #NEW
               self.last_dilutiontime = 0
 
         except Exception as e:
