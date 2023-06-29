@@ -1,0 +1,165 @@
+    def control_alg(self):
+        try:
+
+            print_buffer = 0
+            self.init_pins(self.pin_list)
+
+            if self.selection == 'bars': #NEW
+
+                if self.avOD > self.OD_min:
+                    self.pump_waste()
+
+                    if ((self.elapsed_time.total_seconds - self.last_dilutiontime) >= (self.bars_drug_interval)):  #both were converted into seconds
+                      self.pump_drug()
+                      self.last_dilutiontime = self.elapsed_time.total_seconds
+
+                    else:
+                      self.pump_media()
+
+                else: #report even when pumps aren't activated yet
+                    self.no_pump()
+
+            if self.selection == 'one_n_done': #NEW
+
+                if (self.elapsed_time.total_seconds >= self.single_drugdose_interval):
+                  self.pump_drug()
+
+                if self.avOD > self.OD_min:
+                    self.pump_waste()
+                    self.pump_media()
+
+                else: #report even when pumps aren't activated yet
+                    self.no_pump()
+
+            if self.selection == 'setconcentration': #NEW
+
+                if self.avOD > self.OD_min:
+                    self.dyn_pump_waste()
+
+                    if self.target_concentration > ((self.vial_drug_mass)/self.culture_vol):
+                        self.dyn_pump_drug()
+
+                    else:
+                        self.dyn_pump_media()
+
+                else: #report even when pumps aren't activated yet
+                    self.no_pump()
+
+            self.dil_rate_calc()
+
+            self.last_dilutionOD = self.avOD
+
+            if self.last_dilutiontime < self.bars_drug_interval: #NEW
+              self.last_dilutiontime = 0
+  
+        self.thread_locks['control_alg'].release()
+
+    def pump_waste(self):
+        self.pump_on(self.P_waste_pins)
+        time.sleep(self.P_waste_times)
+        self.pump_off(self.P_waste_pins)
+        self.waste = 3
+        self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
+
+    def pump_drug(self):
+        print('[%s] OD Threshold exceeded, pumping %s' % (self.sysstr,self.drug_name))
+        self.pump_on(self.P_drug_pins)
+        time.sleep(self.P_drug_times)
+        self.pump_off(self.P_drug_pins)
+        self.drug = 2
+        self.pump_act_times.append(self.P_drug_times)
+
+        self.vial_drug_mass = self.vial_drug_mass + self.drug_conc * self.P_drug_times * self.drug_pump_flo_rate
+
+        drugamsg = self.slack_client.api_call(
+            "chat.postMessage",
+            channel = self.chan,
+            username=self.sysstr,
+            icon_url = self.slack_usericon,
+            thread_ts = self.threadts,
+            text = "OD = %0.3f, pumping %s. Drug concentration: %f ug/mL" % (self.avOD, self.drug_name, (self.vial_drug_mass)/self.culture_vol)
+            )
+
+    def pump_media(self):
+        print('[%s] OD below threshold, pumping nutrient' % self.sysstr)
+        self.pump_on(self.P_nut_pins)
+        time.sleep(self.P_nut_times)
+        self.pump_off(self.P_nut_pins)
+        self.nut = 1
+        self.pump_act_times.append(self.P_nut_times)
+
+        thramgs = self.slack_client.api_call(
+            "chat.postMessage",
+            channel = self.chan,
+            username=self.sysstr,
+            icon_url = self.slack_usericon,
+            thread_ts = self.threadts,
+            text = "OD = %0.3f, pumping nutrient. %s concentration: %f ug/mL" % (self.avOD, self.drug_name.capitalize(), (self.vial_drug_mass)/self.culture_vol)
+            )
+
+    def dyn_pump_waste(self):       #NEW
+        if self.target_concentration > ((self.vial_drug_mass)/self.culture_vol):
+          self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
+          self.drug_change_concentration = self.target_concentration - (self.vial_drug_mass / self.culture_vol)
+          self.drug_target_mL = (self.vial_drug_mass /((2 * self.drug_change_concentration)/self.drug_conc))
+          self.P_dyn_waste_times = (self.drug_target_mL / self.drug_pump_flo_rate) 
+        else:
+          self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
+          self.media_change_concentration = (self.vial_drug_mass / self.culture_vol) - self.target_concentration
+          self.media_target_mL = (self.vial_drug_mass /((2 * self.media_change_concentration)/self.drug_conc))
+          self.P_dyn_waste_times = (self.media_target_mL / self.drug_pump_flo_rate) 
+        self.pump_on(self.P_waste_pins)
+        time.sleep(self.P_dyn_waste_times)
+        self.pump_off(self.P_waste_pins)
+        self.waste = 3
+        
+    def dyn_pump_drug(self):        #NEW
+        self.P_dyn_drug_times = self.P_dyn_waste_times
+        print('[%s] OD Threshold exceeded, pumping %s' % (self.sysstr,self.drug_name))
+        self.pump_on(self.P_drug_pins)
+        time.sleep(self.P_dyn_drug_times)
+        self.pump_off(self.P_drug_pins)
+        self.drug = 2
+        self.pump_act_times.append(self.P_dyn_drug_times)
+
+        self.vial_drug_mass = self.vial_drug_mass + self.drug_conc * self.P_dyn_drug_times * self.drug_pump_flo_rate
+
+        drugamsg = self.slack_client.api_call(
+            "chat.postMessage",
+            channel = self.chan,
+            username=self.sysstr,
+            icon_url = self.slack_usericon,
+            thread_ts = self.threadts,
+            text = "OD = %0.3f, pumping %s. Drug concentration: %f ug/mL" % (self.avOD, self.drug_name, (self.vial_drug_mass)/self.culture_vol)
+            )
+
+    def dyn_pump_media(self):       #NEW
+        self.P_dyn_nut_times = self.P_dyn_waste_times
+        print('[%s] OD below threshold, pumping nutrient' % self.sysstr)
+        self.pump_on(self.P_nut_pins)
+        time.sleep(self.P_dyn_nut_times)
+        self.pump_off(self.P_nut_pins)
+        self.nut = 1
+        self.pump_act_times.append(self.P_nut_times)
+
+        thramgs = self.slack_client.api_call(
+            "chat.postMessage",
+            channel = self.chan,
+            username=self.sysstr,
+            icon_url = self.slack_usericon,
+            thread_ts = self.threadts,
+            text = "OD = %0.3f, pumping nutrient. %s concentration: %f ug/mL" % (self.avOD, self.drug_name.capitalize(), (self.vial_drug_mass)/self.culture_vol)
+            )
+
+    def no_pump(self):
+        self.pump_act_times.append(0)
+        # self.vial_drug_mass = 0 if self.vial_drug_mass < 0
+
+        thrbmsg = self.slack_client.api_call(
+                "chat.postMessage",
+                channel = self.chan,
+                username=self.sysstr,
+                icon_url = self.slack_usericon,
+                thread_ts = self.threadts,
+                text = "OD = %0.3f, OD below nutrient pump threshold." % (self.avOD)
+                )
