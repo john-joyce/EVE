@@ -377,6 +377,13 @@ class Morbidostat:
         self.nut_pump_flo_rate = self.config[self.varstr].getfloat('nut_pump_flo_rate')
         self.P_waste_times = self.config[self.varstr].getfloat('P_waste_times')
         self.waste_pump_flo_rate = self.config[self.varstr].getfloat('waste_pump_flo_rate')
+        self.P_dyn_drug_times = 0
+        self.P_dyn_nut_times = 0
+        self.P_dyn_waste_times = 0
+        self.drug_target_mL = 0
+        self.media_target_mL = 0
+        self.drug_change_concentration = 0
+        self.media_change_concentration = 0
 
         self.running_data = []  # the list which will hold our 2-tuples of time and OD
         self.pump_data = []
@@ -423,6 +430,7 @@ class Morbidostat:
         self.pump_act_times = []
         self.dil_rate = 0
         self.max_dil_rate = 0
+        self.conc_point = 0
 
         self.temp_sensor = self.config['MAIN'].getboolean('temp_sensor')
 
@@ -1129,14 +1137,14 @@ class Morbidostat:
                 else: #report even when pumps aren't activated yet
                     self.no_pump()
 
-            if self.selection == 'bars': #NEW 
+            if self.selection == 'bars': #NEW
 
                 if self.avOD > self.OD_min:
                     self.pump_waste()
 
                     if ((self.elapsed_time.total_seconds - self.last_dilutiontime) >= (self.bars_drug_interval)):  #both were converted into seconds
                       self.pump_drug()
-                      self.last_dilutiontime = self.elapsed_time.total_seconds 
+                      self.last_dilutiontime = self.elapsed_time.total_seconds
 
                     else:
                       self.pump_media()
@@ -1162,14 +1170,27 @@ class Morbidostat:
                     self.pump_waste()
 
                     #if condition:
-                        self.pump_drug()
+                        #self.pump_drug()
 
-                    else:
-                        self.pump_media()
+                    #else:
+                        #self.pump_media()
 
                 else: #report even when pumps aren't activated yet
                     self.no_pump()
 
+            if self.selection == 'setconcentration': #NEW
+                self.update_target_concentration()
+                if self.avOD > self.OD_min:
+                    self.dyn_pump_waste()
+
+                    if self.target_concentration > ((self.vial_drug_mass)/self.culture_vol):
+                        self.dyn_pump_drug()
+
+                    else:
+                        self.dyn_pump_media()
+
+                else: #report even when pumps aren't activated yet
+                    self.no_pump()
             self.dil_rate_calc()
 
             self.last_dilutionOD = self.avOD
@@ -1186,6 +1207,16 @@ class Morbidostat:
             pass
 
         self.thread_locks['control_alg'].release()
+
+    def update_target_concentration(self):   #NEW
+    # read csv
+        num_datapoints = ((self.total_time)/self.time_between_pumps)
+        df = pd.read_csv("data.csv", index_col = ['time', 'target conc'], nrows = num_datapoints)
+    #conv to numpy
+        v = df.to_numpy()
+    #set parameters
+        self.target_concentration = v[1, self.conc_point]
+        self.conc_point = self.conc_point + 1
 
     def pump_waste(self):
         self.pump_on(self.P_waste_pins)
@@ -1229,23 +1260,33 @@ class Morbidostat:
             thread_ts = self.threadts,
             text = "OD = %0.3f, pumping nutrient. %s concentration: %f ug/mL" % (self.avOD, self.drug_name.capitalize(), (self.vial_drug_mass)/self.culture_vol)
             )
-        
+
     def dyn_pump_waste(self):       #NEW
+        if self.target_concentration() > ((self.vial_drug_mass)/self.culture_vol):
+          self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
+          self.drug_change_concentration = self.target_concentration() - (self.vial_drug_mass / self.culture_vol)
+          self.drug_target_mL = (self.vial_drug_mass /((2 * self.drug_change_concentration)/self.drug_conc))
+          self.P_dyn_waste_times = (self.drug_target_mL / self.drug_pump_flo_rate)
+        else:
+          self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
+          self.media_change_concentration = (self.vial_drug_mass / self.culture_vol) - self.target_concentration()
+          self.media_target_mL = (self.vial_drug_mass /((2 * self.media_change_concentration)/self.drug_conc))
+          self.P_dyn_waste_times = (self.media_target_mL / self.drug_pump_flo_rate)
         self.pump_on(self.P_waste_pins)
-        time.sleep(self.P_waste_times)
+        time.sleep(self.P_dyn_waste_times)
         self.pump_off(self.P_waste_pins)
         self.waste = 3
-        self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
 
     def dyn_pump_drug(self):        #NEW
+        self.P_dyn_drug_times = self.P_dyn_waste_times
         print('[%s] OD Threshold exceeded, pumping %s' % (self.sysstr,self.drug_name))
         self.pump_on(self.P_drug_pins)
-        time.sleep(self.P_drug_times)
+        time.sleep(self.P_dyn_drug_times)
         self.pump_off(self.P_drug_pins)
         self.drug = 2
-        self.pump_act_times.append(self.P_drug_times)
+        self.pump_act_times.append(self.P_dyn_drug_times)
 
-        self.vial_drug_mass = self.vial_drug_mass + self.drug_conc * self.P_drug_times * self.drug_pump_flo_rate
+        self.vial_drug_mass = self.vial_drug_mass + self.drug_conc * self.P_dyn_drug_times * self.drug_pump_flo_rate
 
         drugamsg = self.slack_client.api_call(
             "chat.postMessage",
@@ -1257,9 +1298,10 @@ class Morbidostat:
             )
 
     def dyn_pump_media(self):       #NEW
+        self.P_dyn_nut_times = self.P_dyn_waste_times
         print('[%s] OD below threshold, pumping nutrient' % self.sysstr)
         self.pump_on(self.P_nut_pins)
-        time.sleep(self.P_nut_times)
+        time.sleep(self.P_dyn_nut_times)
         self.pump_off(self.P_nut_pins)
         self.nut = 1
         self.pump_act_times.append(self.P_nut_times)
@@ -1272,7 +1314,7 @@ class Morbidostat:
             thread_ts = self.threadts,
             text = "OD = %0.3f, pumping nutrient. %s concentration: %f ug/mL" % (self.avOD, self.drug_name.capitalize(), (self.vial_drug_mass)/self.culture_vol)
             )
-        
+
     def no_pump(self):
         self.pump_act_times.append(0)
         # self.vial_drug_mass = 0 if self.vial_drug_mass < 0
@@ -1285,7 +1327,31 @@ class Morbidostat:
                 thread_ts = self.threadts,
                 text = "OD = %0.3f, OD below nutrient pump threshold." % (self.avOD)
                 )
-
+    #def drup_pump_calc(self):      #FOR ESHAN required variables: culture volume, concentration rate, flow rate, drug_conc
+     #   self.vial_drug_mass = self.concentration_rate * self.culture_vol
+      #  if ((self.vial_drug_mass/self.culture_vol) > self.concentration_rate):
+       #   self.dyn_pump_media
+   #     if ((self.vial_drug_mass/self.culture_vol) < self.concentration_rate):
+    #      self.P_drug_times = self.vial_drug_mass
+     #   if ((self.vial_drug_mass/self.culture_vol) = self.concentration_rate):
+#
+#
+ #       self.vial_drug_mass = self.vial_drug_mass + self.drug_conc * self.P_drug_times * self.drug_pump_flo_rate
+#
+ #         self.dil_rate = self.drug_pump_flo_rate * self.pump_act_times[-1]/(self.time_between_pumps * self.culture_vol)
+  #      elif pump_substrate:
+   #       self.dil_rate = self.nut_pump_flo_rate * self.pump_act_times[-1]/(self.time_between_pumps * self.culture_vol)
+    #    else:
+     #     self.dil_rate = 0
+      #  if ((self.vial_drug_mass)/self.culture_vol)
+       # if pump_waste:
+        #self.vial_drug_mass = self.vial_drug_mass - (self.vial_drug_mass/self.culture_vol)
+         # if pump_drug:
+          #  self.vial_drug_mass = self.vial_drug_mass + self.drug_conc * self.P_drug_times * self.drug_pump_flo_rate
+#          else:
+ #           self.vial_drug_mass = self.vial_drug_mass * self.dil_rate
+#
+ #       concentrationrate = ((self.vial_drug_mass)/self.culture_vol)
     def dil_rate_calc(self):
         if len(self.pump_act_times) > 3:
             self.pump_act_times.pop(0)
