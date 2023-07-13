@@ -433,6 +433,7 @@ class Morbidostat:
         self.pump_act_times = []
         self.dil_rate = 0
         self.max_dil_rate = 0
+        self.target_concentration_csv = self.config[self.varstr].getint('target_concentration_csvf')
 
         self.temp_sensor = self.config['MAIN'].getboolean('temp_sensor')
 
@@ -1180,8 +1181,8 @@ class Morbidostat:
                 else: #report even when pumps aren't activated yet
                     self.no_pump()
 
-            if self.selection == 'setconcentration': #NEW
-                self.update_target_concentration()
+            if self.selection == 'setconcentration': #this is the config to use
+                self.update_target_concentration()   
                 self.dyn_pump_waste()
                 self.dyn_pump_drug()
                 self.dyn_pump_media()
@@ -1203,13 +1204,13 @@ class Morbidostat:
 
         self.thread_locks['control_alg'].release()
 
-    def update_target_concentration(self):   #NEW
-        num_datapoints = ((self.total_time)/self.time_between_pumps)
-        df = pd.read_csv(io.BytesIO(uploaded["data.csv"]), nrows = num_datapoints)
+    def update_target_concentration(self):   #function that sets target conc/reads csv
+        num_pumps = ((self.total_time)/self.time_between_pumps)  #this determines the number of pumps that will occur
+        df = pd.read_csv(self.target_concentration_csv)        #uploads csv
         #conv to numpy
-        v = df.to_numpy()
+        v = df.to_numpy()                                         #converts to numpy
         #set parameters
-        self.target_concentration = v[self.conc_point]
+        self.target_concentration = v[self.conc_point]            #calls 
         self.conc_point = self.conc_point + 1
 
 
@@ -1256,20 +1257,14 @@ class Morbidostat:
             text = "OD = %0.3f, pumping nutrient. %s concentration: %f ug/mL" % (self.avOD, self.drug_name.capitalize(), (self.vial_drug_mass)/self.culture_vol)
             )
 
-    def dyn_pump_waste(self):       #NEW
-        self.P_dyn_waste_times = ((self.culture_vol * self.dil_set) / self.waste_pump_flo_rate)
-        if self.target_concentration >= ((self.vial_drug_mass)/self.culture_vol):
-          self.vial_drug_mass = self.vial_drug_mass * (1 - self.dil_set)
-          self.change_dmass = (self.target_concentration * self.culture_vol) - self.vial_drug_mass
-          self.drug_target_mL = (self.change_dmass/self.drug_conc)
-          self.P_dyn_drug_times = (self.drug_target_mL / self.drug_pump_flo_rate)
-          self.P_dyn_nut_times = self.P_dyn_waste_times - self.P_dyn_drug_times
-        elif self.target_concentration < ((self.vial_drug_mass)/self.culture_vol):
-          self.vial_drug_mass = self.vial_drug_mass * (1 - self.dil_set)
-          self.change_dmass = (self.target_concentration * self.culture_vol) - self.vial_drug_mass
-          self.drug_target_mL = (self.change_dmass/self.drug_conc)
-          self.P_dyn_drug_times = (self.drug_target_mL / self.drug_pump_flo_rate)
-          self.P_dyn_nut_times = self.P_dyn_waste_times - self.P_dyn_drug_times
+    def dyn_pump_waste(self):       #system that calculates times
+        self.P_dyn_waste_times = ((self.culture_vol * self.dil_set) / self.waste_pump_flo_rate) #dilutes the medium
+        self.vial_drug_mass = self.vial_drug_mass * (1 - self.dil_set)  #dilutes drug mass
+        self.change_dmass = (self.target_concentration * self.culture_vol) - self.vial_drug_mass #calculates what mass addition needed
+        self.drug_target_mL = (self.change_dmass/self.drug_conc)  #how many mLs of drug to add
+        #times
+        self.P_dyn_drug_times = (self.drug_target_mL / self.drug_pump_flo_rate)     
+        self.P_dyn_nut_times = self.P_dyn_waste_times - self.P_dyn_drug_times
         waste = 3
         self.pump_on(self.P_waste_pins)
         time.sleep(self.P_dyn_waste_times)
